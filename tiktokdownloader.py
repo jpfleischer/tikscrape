@@ -45,32 +45,6 @@ def _ensure_dir(p: pathlib.Path):
     return p
 
 
-def _expand_share_url(url: str, max_hops: int = 5) -> str:
-    """
-    Follow redirects for TikTok short links (/t/, vm., vt.) and return the final URL.
-    Uses a real GET + desktop UA because HEAD often won’t expand them.
-    """
-    s = requests.Session()
-    s.headers.update({"User-Agent": UA, "Accept": "*/*"})
-    cur = url
-    for _ in range(max_hops):
-        try:
-            r = s.get(cur, allow_redirects=True, timeout=15)
-            r.raise_for_status()
-            nxt = r.url or cur
-            if nxt == cur and "text/html" in r.headers.get("Content-Type", "") and r.text:
-                # handle simple meta-refresh cases
-                m = re.search(r'http-equiv=["\']refresh["\'][^>]*url=([^"\'> ]+)', r.text, re.I)
-                if m:
-                    nxt = urllib.parse.unquote(m.group(1))
-            if nxt == cur:
-                return cur
-            cur = nxt
-            time.sleep(0.1)
-        except Exception:
-            return cur
-    return cur
-
 
 def _safe_filename(s: str, max_len=120) -> str:
     s = re.sub(r"[^\w\-. ]+", "_", s).strip()
@@ -173,71 +147,7 @@ def find_method(api_obj, *must_contain):
     )
     return getattr(api_obj, name) if name else None
 
-def resolve_aweme_id_via_get_endpoint(api_client, share_url: str) -> Optional[str]:
-    """
-    Use TikHub 'get_aweme_id' endpoints ONLY (SDK if present, else raw REST).
-    No local redirect expansion.
-    """
-    # --- SDK paths (TikTok-Web and Douyin-Web) ---
-    sdk_classes = []
-    for name in ("TikTokWebAPIApi", "TikTokWebApi", "DouyinWebAPIApi", "DouyinWebApi"):
-        cls = getattr(tikhub_sdk_v2, name, None)
-        if cls:
-            try:
-                sdk_classes.append(cls(api_client))
-            except Exception:
-                pass
 
-    for api in sdk_classes:
-        m = find_method(api, "get", "aweme", "id") or find_method(api, "aweme", "id")
-        if not m:
-            continue
-        # support different arg names across builds
-        for param in ("url", "share_url", "link"):
-            try:
-                resp = m(**{param: share_url, "_preload_content": False})
-                data = _json(resp)
-                aweme_id = _first([data.get("aweme_id"), (data.get("data") or {}).get("aweme_id")])
-                if aweme_id:
-                    return str(aweme_id)
-            except TypeError:
-                continue
-            except Exception:
-                continue
-
-    # --- Raw REST fallbacks (mirrors) ---
-    api_key = os.getenv("TIKHUB_API_KEY")
-    if not api_key:
-        return None
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Accept": "application/json",
-        # UA is fine to keep; the API handles short links serverside
-        "User-Agent": UA,
-    }
-    endpoints = [
-        f"{API_HOST}/api/v1/tiktok/web/get_aweme_id",
-        f"{API_HOST}/tiktok/web/get_aweme_id",
-        f"{API_HOST}/api/v1/douyin/web/get_aweme_id",
-        f"{API_HOST}/douyin/web/get_aweme_id",
-    ]
-    for ep in endpoints:
-        try:
-            r = requests.get(ep, params={"url": share_url}, headers=headers, timeout=20)
-            if r.status_code == 200:
-                data = _json(r.content)
-                aweme_id = _first([data.get("aweme_id"), (data.get("data") or {}).get("aweme_id")])
-                if aweme_id:
-                    return str(aweme_id)
-        except Exception:
-            continue
-
-    return None
-
-
-
-def _clean_url(u: str) -> str:
-    return (u or "").strip().strip("'").strip('"')
 
 
 def resolve_aweme_id(api_client, share_url: str) -> str:
@@ -382,29 +292,6 @@ def extract_play_url(detail: Dict[str, Any]) -> Optional[str]:
         d.get("play_url"),
     ]
     return _first(candidates)
-
-# ---------- captions/subtitles from detail ----------
-def extract_caption_urls(detail: Dict[str, Any]) -> List[str]:
-    """
-    TikTok sometimes exposes subtitles as:
-      - data.aweme_detail.video.subtitleInfos[*].url
-      - data.video.subtitles[*].url
-      - data.subtitles[*].url
-    (Docs advise: first fetch detail, then follow subtitle URL to get content — pattern shown for YouTube subtitles but applies similarly) 
-    """
-    d = detail.get("data", detail)
-    urls = []
-    # v1 style
-    infos = (((d.get("aweme_detail") or {}).get("video") or {}).get("subtitleInfos") or [])
-    urls += [x.get("url") for x in infos if isinstance(x, dict) and x.get("url")]
-    # alt styles
-    for key in ("video",):
-        subs = (d.get(key) or {}).get("subtitles") or []
-        urls += [x.get("url") for x in subs if isinstance(x, dict) and x.get("url")]
-    subs = d.get("subtitles") or []
-    urls += [x.get("url") for x in subs if isinstance(x, dict) and x.get("url")]
-    # dedupe
-    return [u for u, _ in itertools.groupby([u for u in urls if u])]
 
 def download_url(url: str, out_path: pathlib.Path):
     _ensure_dir(out_path)
@@ -594,8 +481,6 @@ def save_captions(caption_urls, base_path: pathlib.Path):
             f.write(json.dumps(it, ensure_ascii=False) + "\n")
     print(f"[ok] captions → {vtt_path}, {jsonl_path}")
     return {"vtt": str(vtt_path), "jsonl": str(jsonl_path)}
-
-
 
 
 # ---------- normalize key metadata ----------
