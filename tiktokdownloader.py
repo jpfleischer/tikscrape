@@ -10,6 +10,9 @@ from typing import Optional
 
 import tikhub_sdk_v2
 from tikhub_sdk_v2.rest import ApiException
+from dotenv import load_dotenv
+
+load_dotenv()  # reads .env from current working directory
 
 API_HOST = "https://api.tikhub.io"
 
